@@ -1,4 +1,4 @@
-# http
+# Http Utilities (Go Fiber)
 
 ![GitHub Tag](https://img.shields.io/github/v/tag/go-universal/http?sort=semver&label=version)
 [![Go Reference](https://pkg.go.dev/badge/github.com/go-universal/http.svg)](https://pkg.go.dev/github.com/go-universal/http)
