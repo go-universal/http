@@ -52,3 +52,14 @@ func isRFC9110Method(c *fiber.Ctx) bool {
 		c.Method(),
 	)
 }
+
+// getBodyValue get value from request body.
+func getBodyValue(ctx *fiber.Ctx, key string) string {
+	var body map[string]interface{}
+	if err := ctx.BodyParser(&body); err != nil {
+		return ""
+	}
+
+	value, _ := body[key].(string)
+	return value
+}

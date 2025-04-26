@@ -2,6 +2,7 @@ package csrf
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/go-universal/http/session"
 	"github.com/gofiber/fiber/v2"
@@ -35,6 +36,7 @@ func NewMiddleware(options ...Option) fiber.Handler {
 		if session == nil {
 			return errors.New("failed to resolve session")
 		}
+
 		token := session.Cast("csrf").StringSafe("")
 		if token == "" { // Generate or refresh token if needed
 			token = refresh(session)
@@ -42,9 +44,10 @@ func NewMiddleware(options ...Option) fiber.Handler {
 
 		// Proccess request
 		if option.header {
-			c.Append("Access-Control-Allow-Headers", "X-CSRF-TOKEN")
+			option.key = strings.ToUpper(option.key)
+			c.Append("Access-Control-Allow-Headers", option.key)
 			if isRFC9110Method(c) {
-				input := c.Get("X-CSRF-Token")
+				input := c.Get(option.key)
 				if token == "" || input != token {
 					if option.fail != nil {
 						return option.fail(c)
@@ -54,13 +57,8 @@ func NewMiddleware(options ...Option) fiber.Handler {
 			}
 		} else {
 			if isRFC9110Method(c) {
-				type Form struct {
-					Token string `json:"csrf_token" form:"csrf_token"`
-				}
-				var inp Form
-				c.BodyParser(&inp)
-
-				if token == "" || inp.Token != token {
+				input := getBodyValue(c, option.key)
+				if token == "" || input != token {
 					if option.fail != nil {
 						return option.fail(c)
 					}

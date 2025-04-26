@@ -38,10 +38,10 @@ type Session interface {
 	CreatedAt() *time.Time
 
 	// AddTTL extends the session's time-to-live.
-	AddTTL(ttl time.Duration)
+	AddTTL(ttl time.Duration) error
 
 	// SetTTL set session's time-to-live.
-	SetTTL(ttl time.Duration)
+	SetTTL(ttl time.Duration) error
 
 	// Destroy terminates the session.
 	Destroy() error
@@ -194,10 +194,10 @@ func (s *session) CreatedAt() *time.Time {
 	return &t
 }
 
-func (s *session) AddTTL(t time.Duration) {
+func (s *session) AddTTL(t time.Duration) error {
 	// Skip empty ttl
 	if t <= 0 {
-		return
+		return nil
 	}
 
 	// Safe race condition
@@ -207,13 +207,13 @@ func (s *session) AddTTL(t time.Duration) {
 	// Schedule update
 	s.ttl = t
 	s.modified = true
-	s.sync()
+	return s.sync()
 }
 
-func (s *session) SetTTL(t time.Duration) {
+func (s *session) SetTTL(t time.Duration) error {
 	// Skip empty ttl
 	if t <= 0 {
-		return
+		return nil
 	}
 
 	// Safe race condition
@@ -223,7 +223,7 @@ func (s *session) SetTTL(t time.Duration) {
 	// Schedule update
 	s.ttl = -t
 	s.modified = true
-	s.sync()
+	return s.sync()
 }
 
 func (s *session) Destroy() error {
@@ -310,13 +310,10 @@ func (s *session) Fresh() error {
 	s.id = s.opt.generator()
 	s.ttl = s.opt.ttl
 	s.data = make(map[string]any)
-	s.ttl = 0
 	s.fresh = true
 	s.modified = true
 	s.data["created_at"] = time.Now().Format(time.RFC3339)
-	s.sync()
-
-	return nil
+	return s.sync()
 }
 
 func (s *session) Load() (bool, error) {
@@ -370,23 +367,36 @@ func (s *session) getName() string {
 	return s.opt.name
 }
 
-func (s *session) sync() {
+func (s *session) sync() error {
 	// Ignore empty or destroyed
 	if s.id == "" {
-		return
+		return nil
 	}
 
 	// Send header data
 	if s.opt.header {
 		s.ctx.Set(s.opt.name, s.id)
-		return
+		return nil
 	}
 
 	// Send cookie
+	ttl := s.ttl
+	if !s.fresh {
+		if s.ttl < 0 {
+			ttl = -s.ttl
+		} else if s.ttl > 0 {
+			if cacheTTL, err := s.cache.TTL(s.k()); err != nil {
+				return err
+			} else if cacheTTL > 0 {
+				ttl += cacheTTL
+			}
+		}
+	}
+
 	s.ctx.Cookie(&fiber.Cookie{
 		Name:        s.opt.name,
 		Value:       s.id,
-		Expires:     time.Now().Add(s.ttl),
+		Expires:     time.Now().Add(ttl),
 		Secure:      s.opt.cookie.Secure,
 		Domain:      s.opt.cookie.Domain,
 		SameSite:    s.opt.cookie.SameSite,
@@ -395,6 +405,8 @@ func (s *session) sync() {
 		HTTPOnly:    s.opt.cookie.HTTPOnly,
 		SessionOnly: s.opt.cookie.SessionOnly,
 	})
+
+	return nil
 }
 
 func (s *session) k() string {
