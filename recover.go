@@ -41,19 +41,17 @@ func NewFiberErrorHandler(l logger.Logger, cb ErrorCallback, codes ...int) fiber
 			message = "Internal Server Error"
 		)
 
-		// Parse Fiber error
-		if fe, ok := err.(*fiber.Error); ok {
+		if fe, ok := err.(*fiber.Error); ok { // Parse Fiber error
 			status = fe.Code
 			message = fe.Error()
-		}
-
-		// Parse custom HttpError
-		if he, ok := err.(HttpError); ok {
+		} else if he, ok := err.(HttpError); ok { // Parse custom HttpError
 			file = he.File
 			line = he.Line
 			message = he.Error()
 			status = he.Status
 			body = he.Body
+		} else { // Parse regular errors
+			message = err.Error()
 		}
 
 		// Log the error if logger is provided and status matches the specified codes
