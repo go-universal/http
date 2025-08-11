@@ -83,6 +83,7 @@ func New(ctx *fiber.Ctx, cache cache.Cache, options ...Option) (Session, error) 
 		ttl:       24 * time.Hour,
 		name:      "session",
 		header:    false,
+		readOnly:  false,
 		cookie:    &fiber.Cookie{},
 		generator: UUIDGenerator,
 	}
@@ -195,8 +196,8 @@ func (s *session) CreatedAt() *time.Time {
 }
 
 func (s *session) AddTTL(t time.Duration) error {
-	// Skip empty ttl
-	if t <= 0 {
+	// Skip empty ttl or readonly
+	if t <= 0 || s.opt.readOnly {
 		return nil
 	}
 
@@ -211,8 +212,8 @@ func (s *session) AddTTL(t time.Duration) error {
 }
 
 func (s *session) SetTTL(t time.Duration) error {
-	// Skip empty ttl
-	if t <= 0 {
+	// Skip empty ttl or readonly
+	if t <= 0 || s.opt.readOnly {
 		return nil
 	}
 
@@ -227,8 +228,8 @@ func (s *session) SetTTL(t time.Duration) error {
 }
 
 func (s *session) Destroy() error {
-	// Skip empty session
-	if s.id == "" {
+	// Skip empty session or readonly
+	if s.id == "" || s.opt.readOnly {
 		return nil
 	}
 
@@ -249,8 +250,8 @@ func (s *session) Destroy() error {
 }
 
 func (s *session) Save() error {
-	// Skip un-initialized or unchanged or destroyed session
-	if s.id == "" || (!s.fresh && !s.modified) {
+	// Skip un-initialized, readonly or unchanged or destroyed session
+	if s.id == "" || s.opt.readOnly || (!s.fresh && !s.modified) {
 		return nil
 	}
 
@@ -294,6 +295,11 @@ func (s *session) Save() error {
 }
 
 func (s *session) Fresh() error {
+	// Skip readonly session
+	if s.opt.readOnly {
+		return nil
+	}
+
 	// Safe race condition
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
@@ -367,9 +373,13 @@ func (s *session) getName() string {
 	return s.opt.name
 }
 
+func (s *session) k() string {
+	return "ses-" + s.id
+}
+
 func (s *session) sync() error {
-	// Ignore empty or destroyed
-	if s.id == "" {
+	// Ignore empty, readonly or destroyed
+	if s.id == "" || s.opt.readOnly {
 		return nil
 	}
 
@@ -407,8 +417,4 @@ func (s *session) sync() error {
 	})
 
 	return nil
-}
-
-func (s *session) k() string {
-	return "ses-" + s.id
 }

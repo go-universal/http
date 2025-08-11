@@ -12,6 +12,7 @@ type option struct {
 	ttl       time.Duration // ttl specifies the time-to-live duration for the session.
 	name      string        // name is the name of the session.
 	header    bool          // header indicates whether the session should be stored in the header.
+	readOnly  bool          // not generate session if not exists
 	cookie    *fiber.Cookie // cookie represents the session cookie settings.
 	generator IdGenerator   // generator is the function used to generate session IDs.
 }
@@ -51,6 +52,14 @@ func WithCookie(name string, cookie fiber.Cookie) Option {
 			o.cookie = &cookie
 			o.header = false
 		}
+	}
+}
+
+// WithReadonly returns an Option that sets the session to read-only mode.
+// When enabled, a session will not be generated if it does not already exist.
+func WithReadonly() Option {
+	return func(o *option) {
+		o.readOnly = true
 	}
 }
 
