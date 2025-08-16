@@ -17,7 +17,7 @@ func NewMiddleware(cache cache.Cache, options ...Option) fiber.Handler {
 		}
 
 		// Set Allowed header
-		if s.isHeader() {
+		if s.isHeader() && !s.isNoop() {
 			c.Append("Access-Control-Expose-Headers", s.getName())
 			c.Append("Access-Control-Allow-Headers", s.getName())
 		}

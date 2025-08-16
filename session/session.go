@@ -58,6 +58,7 @@ type Session interface {
 	Load() (bool, error)
 
 	isHeader() bool
+	isNoop() bool
 	getName() string
 }
 
@@ -70,6 +71,7 @@ type session struct {
 	ttl      time.Duration // Additional time-to-live for the session.
 	fresh    bool          // Flag indicating if session is fresh.
 	modified bool          // Flag indicating if session data has been modified.
+	noop     bool          // Flag indicating if session should ignored on readonly mode when session not exists.
 
 	ctx   *fiber.Ctx   // Fiber context associated with the session.
 	cache cache.Cache  // Cache for storing session data.
@@ -101,12 +103,17 @@ func New(ctx *fiber.Ctx, cache cache.Cache, options ...Option) (Session, error) 
 
 	// Generate session
 	session := &session{
-		id:    id,
-		opt:   *option,
-		ttl:   0,
+		id:   id,
+		opt:  *option,
+		data: make(map[string]any),
+
+		ttl:      0,
+		fresh:    false,
+		modified: false,
+		noop:     false,
+
 		ctx:   ctx,
 		cache: cache,
-		data:  make(map[string]any),
 	}
 
 	ok, err := session.Load()
@@ -115,8 +122,10 @@ func New(ctx *fiber.Ctx, cache cache.Cache, options ...Option) (Session, error) 
 	}
 
 	if !ok {
-		err := session.Fresh()
-		if err != nil {
+		// Readonly mode or create fresh
+		if option.readOnly {
+			session.noop = true
+		} else if err := session.Fresh(); err != nil {
 			return nil, err
 		}
 	}
@@ -139,6 +148,11 @@ func (s *session) Context() *fiber.Ctx {
 }
 
 func (s *session) Set(k string, v any) {
+	// Ignore not-exists readonly session
+	if s.isNoop() {
+		return
+	}
+
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -156,6 +170,11 @@ func (s *session) Get(k string) any {
 }
 
 func (s *session) Delete(k string) {
+	// Ignore not-exists readonly session
+	if s.isNoop() {
+		return
+	}
+
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -196,8 +215,8 @@ func (s *session) CreatedAt() *time.Time {
 }
 
 func (s *session) AddTTL(t time.Duration) error {
-	// Skip empty ttl or readonly
-	if t <= 0 || s.opt.readOnly {
+	// Skip empty ttl and not-exists readonly session
+	if t <= 0 || s.isNoop() {
 		return nil
 	}
 
@@ -212,8 +231,8 @@ func (s *session) AddTTL(t time.Duration) error {
 }
 
 func (s *session) SetTTL(t time.Duration) error {
-	// Skip empty ttl or readonly
-	if t <= 0 || s.opt.readOnly {
+	// Skip empty ttl and not-exists readonly session
+	if t <= 0 || s.isNoop() {
 		return nil
 	}
 
@@ -228,8 +247,8 @@ func (s *session) SetTTL(t time.Duration) error {
 }
 
 func (s *session) Destroy() error {
-	// Skip empty session or readonly
-	if s.id == "" || s.opt.readOnly {
+	// Skip empty session and not-exists readonly session
+	if s.id == "" || s.isNoop() {
 		return nil
 	}
 
@@ -246,12 +265,15 @@ func (s *session) Destroy() error {
 	// Clear data
 	s.id = ""
 	s.data = make(map[string]any)
+	s.ttl = 0
+	s.fresh = false
+	s.modified = false
 	return nil
 }
 
 func (s *session) Save() error {
-	// Skip un-initialized, readonly or unchanged or destroyed session
-	if s.id == "" || s.opt.readOnly || (!s.fresh && !s.modified) {
+	// Skip un-initialized, unchanged, destroyed and  not-exists readonly session
+	if s.id == "" || (!s.fresh && !s.modified) || s.isNoop() {
 		return nil
 	}
 
@@ -267,36 +289,43 @@ func (s *session) Save() error {
 
 	// Store New
 	if s.fresh {
-		return s.cache.Put(s.k(), encoded, &s.opt.ttl)
-	}
-
-	// Add ttl
-	if s.ttl > 0 {
-		ttl, err := s.cache.TTL(s.k())
-		if err != nil {
+		if err := s.cache.Put(s.k(), encoded, &s.opt.ttl); err != nil {
 			return err
-		} else if ttl <= 0 {
-			ttl = s.ttl
-		} else {
-			ttl += s.ttl
 		}
-		return s.cache.Put(s.k(), encoded, &ttl)
+	} else {
+		if s.ttl != 0 {
+			var ttl time.Duration
+			if s.ttl > 0 {
+				if current, err := s.cache.TTL(s.k()); err != nil {
+					return err
+				} else if ttl <= 0 {
+					ttl = s.ttl
+				} else {
+					ttl = current + s.ttl
+				}
+			} else {
+				ttl = -s.ttl
+			}
+
+			if err := s.cache.Put(s.k(), encoded, &ttl); err != nil {
+				return nil
+			}
+		} else {
+			if _, err = s.cache.Update(s.k(), encoded); err != nil {
+				return err
+			}
+		}
 	}
 
-	// Set ttl
-	if s.ttl < 0 {
-		ttl := -s.ttl
-		return s.cache.Put(s.k(), encoded, &ttl)
-	}
-
-	// Save data
-	_, err = s.cache.Update(s.k(), encoded)
-	return err
+	s.ttl = 0
+	s.fresh = false
+	s.modified = false
+	return nil
 }
 
 func (s *session) Fresh() error {
-	// Skip readonly session
-	if s.opt.readOnly {
+	// Ignore not-exists readonly session
+	if s.isNoop() {
 		return nil
 	}
 
@@ -366,6 +395,13 @@ func (s *session) isHeader() bool {
 	return s.opt.header
 }
 
+func (s *session) isNoop() bool {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	return s.noop
+}
+
 func (s *session) getName() string {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
@@ -378,8 +414,8 @@ func (s *session) k() string {
 }
 
 func (s *session) sync() error {
-	// Ignore empty, readonly or destroyed
-	if s.id == "" || s.opt.readOnly {
+	// Ignore empty and not-exists readonly session
+	if s.id == "" || s.isNoop() {
 		return nil
 	}
 
