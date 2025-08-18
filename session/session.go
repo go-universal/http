@@ -149,7 +149,7 @@ func (s *session) Context() *fiber.Ctx {
 
 func (s *session) Set(k string, v any) {
 	// Ignore not-exists readonly session
-	if s.isNoop() {
+	if s.noop {
 		return
 	}
 
@@ -171,7 +171,7 @@ func (s *session) Get(k string) any {
 
 func (s *session) Delete(k string) {
 	// Ignore not-exists readonly session
-	if s.isNoop() {
+	if s.noop {
 		return
 	}
 
@@ -216,7 +216,7 @@ func (s *session) CreatedAt() *time.Time {
 
 func (s *session) AddTTL(t time.Duration) error {
 	// Skip empty ttl and not-exists readonly session
-	if t <= 0 || s.isNoop() {
+	if t <= 0 || s.noop {
 		return nil
 	}
 
@@ -227,12 +227,12 @@ func (s *session) AddTTL(t time.Duration) error {
 	// Schedule update
 	s.ttl = t
 	s.modified = true
-	return s.sync()
+	return s.syncLocked()
 }
 
 func (s *session) SetTTL(t time.Duration) error {
 	// Skip empty ttl and not-exists readonly session
-	if t <= 0 || s.isNoop() {
+	if t <= 0 || s.noop {
 		return nil
 	}
 
@@ -243,12 +243,12 @@ func (s *session) SetTTL(t time.Duration) error {
 	// Schedule update
 	s.ttl = -t
 	s.modified = true
-	return s.sync()
+	return s.syncLocked()
 }
 
 func (s *session) Destroy() error {
 	// Skip empty session and not-exists readonly session
-	if s.id == "" || s.isNoop() {
+	if s.id == "" || s.noop {
 		return nil
 	}
 
@@ -272,8 +272,8 @@ func (s *session) Destroy() error {
 }
 
 func (s *session) Save() error {
-	// Skip un-initialized, unchanged, destroyed and  not-exists readonly session
-	if s.id == "" || (!s.fresh && !s.modified) || s.isNoop() {
+	// Skip un-initialized, unchanged, destroyed and not-exists readonly session
+	if s.id == "" || (!s.fresh && !s.modified) || s.noop {
 		return nil
 	}
 
@@ -292,28 +292,27 @@ func (s *session) Save() error {
 		if err := s.cache.Put(s.k(), encoded, &s.opt.ttl); err != nil {
 			return err
 		}
-	} else {
-		if s.ttl != 0 {
-			var ttl time.Duration
-			if s.ttl > 0 {
-				if current, err := s.cache.TTL(s.k()); err != nil {
-					return err
-				} else if ttl <= 0 {
-					ttl = s.ttl
-				} else {
-					ttl = current + s.ttl
-				}
-			} else {
-				ttl = -s.ttl
-			}
+	} else if s.ttl != 0 {
+		var ttl time.Duration
 
-			if err := s.cache.Put(s.k(), encoded, &ttl); err != nil {
-				return nil
+		if s.ttl > 0 {
+			if current, err := s.cache.TTL(s.k()); err != nil {
+				return err
+			} else if current <= 0 {
+				ttl = s.ttl
+			} else {
+				ttl = current + s.ttl
 			}
 		} else {
-			if _, err = s.cache.Update(s.k(), encoded); err != nil {
-				return err
-			}
+			ttl = -s.ttl
+		}
+
+		if err := s.cache.Put(s.k(), encoded, &ttl); err != nil {
+			return err
+		}
+	} else {
+		if _, err = s.cache.Update(s.k(), encoded); err != nil {
+			return err
 		}
 	}
 
@@ -325,7 +324,7 @@ func (s *session) Save() error {
 
 func (s *session) Fresh() error {
 	// Ignore not-exists readonly session
-	if s.isNoop() {
+	if s.noop {
 		return nil
 	}
 
@@ -348,7 +347,7 @@ func (s *session) Fresh() error {
 	s.fresh = true
 	s.modified = true
 	s.data["created_at"] = time.Now().Format(time.RFC3339)
-	return s.sync()
+	return s.syncLocked()
 }
 
 func (s *session) Load() (bool, error) {
@@ -413,13 +412,13 @@ func (s *session) k() string {
 	return "ses-" + s.id
 }
 
-func (s *session) sync() error {
+func (s *session) syncLocked() error {
 	// Ignore empty and not-exists readonly session
-	if s.id == "" || s.isNoop() {
+	if s.id == "" || s.noop {
 		return nil
 	}
 
-	// Send header data
+	// Send header
 	if s.opt.header {
 		s.ctx.Set(s.opt.name, s.id)
 		return nil
